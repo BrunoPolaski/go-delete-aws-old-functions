@@ -12,35 +12,57 @@ import (
 func main() {
 	sess := session.Must(session.NewSession(&aws.Config{
 		Region: aws.String("region"),
+		// Credentials: credentials.NewSharedCredentials("", "default"), // Uncomment if you are not using default profile picked up from ~/.aws/credentials
 	}))
 	svc := lambda.New(sess)
+
+	var wg sync.WaitGroup
 
 	input := &lambda.ListVersionsByFunctionInput{
 		FunctionName: aws.String("lambda-function"),
 	}
-	result, _ := svc.ListVersionsByFunction(input)
 
-	var wg sync.WaitGroup
+	var result *lambda.ListVersionsByFunctionOutput
+
+	for {
+		versions, err := svc.ListVersionsByFunction(input)
+		if err != nil {
+			fmt.Println("Error listing versions:", err)
+			return
+		}
+
+		if result == nil {
+			result = versions
+		} else {
+			result.Versions = append(result.Versions, versions.Versions...)
+		}
+
+		if versions.NextMarker == nil {
+			break
+		}
+
+		input.Marker = versions.NextMarker
+	}
+
+	result.Versions = result.Versions[1:]
+	result.Versions = result.Versions[:len(result.Versions)-1]
 
 	for _, version := range result.Versions {
-		if *version.Version != "$LATEST" {
-			wg.Add(1)
-
-			go func(version string) {
-				defer wg.Done()
-				fmt.Println("Deleting version:", version)
-				delInput := &lambda.DeleteFunctionInput{
-					FunctionName: aws.String("lambda-function"),
-					Qualifier:    aws.String(version),
-				}
-				_, delErr := svc.DeleteFunction(delInput)
-				if delErr != nil {
-					fmt.Println("Error deleting version", version, ":", delErr)
-				} else {
-					fmt.Println("Deleted version", version)
-				}
-			}(*version.Version)
-		}
+		fmt.Println("Processing version: ", *version.Version)
+		wg.Add(1)
+		go func(version string) {
+			defer wg.Done()
+			delInput := &lambda.DeleteFunctionInput{
+				FunctionName: aws.String("lambda-function"),
+				Qualifier:    aws.String(version),
+			}
+			_, delErr := svc.DeleteFunction(delInput)
+			if delErr != nil {
+				fmt.Println("Error deleting version ", version, ":", delErr)
+			} else {
+				fmt.Println("Deleted version: ", version)
+			}
+		}(*version.Version)
 	}
 
 	wg.Wait()
